@@ -19,3 +19,7 @@ body {
   user-select: none;
   -webkit-user-select: none;
 }
+
+:root {
+  --bg: #1e1e1e;
+}
