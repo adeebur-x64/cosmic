@@ -53,9 +53,10 @@
         "fullscreen": true,
         "transparent": true,
         "decorations": false,
-        "shadow": true,
+        "shadow": false,
         "alwaysOnTop": false,
-        "resizable": false
+        "resizable": false,
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,WindowControlsOverlay,StatusBubble --hide-scrollbars"
       }
     ],
     "security": {
