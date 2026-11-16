@@ -1,20 +1,32 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::{sync::atomic::{AtomicIsize, Ordering}, thread, time::Duration};
-use tauri::{window::Color, Emitter, Manager};
+use std::{
+    sync::{
+        atomic::{AtomicIsize, Ordering},
+        Mutex,
+    },
+    thread,
+    time::Duration,
+};
+use tauri::{window::Color, Manager};
 
 #[cfg(target_os = "windows")]
 use windows::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, WPARAM},
-    Graphics::Dwm::{DwmExtendFrameIntoClientArea, DwmSetWindowAttribute, DWMNCRP_DISABLED, DWMWA_NCRENDERING_POLICY},
+    Graphics::Dwm::{
+        DwmExtendFrameIntoClientArea, DwmSetWindowAttribute, DWMNCRP_DISABLED,
+        DWMWA_NCRENDERING_POLICY,
+    },
     UI::{
         Controls::MARGINS,
         WindowsAndMessaging::{
-            CallWindowProcW, DefWindowProcW, GetWindowLongW, SetWindowLongPtrW, SetWindowLongW,
-            SetWindowPos, GWLP_WNDPROC, GWL_STYLE, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
-            SWP_NOSIZE, SWP_NOZORDER, WM_ERASEBKGND, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCPAINT,
-            WNDPROC, WS_BORDER, WS_CAPTION, WS_DLGFRAME, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
+            CallWindowProcW, DefWindowProcW, GetSystemMetrics, GetWindowLongW, SetWindowLongPtrW,
+            SetWindowLongW, SetWindowPos, GWLP_WNDPROC, GWL_EXSTYLE, GWL_STYLE, SM_CXSCREEN,
+            SM_CYSCREEN, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOZORDER, WM_ERASEBKGND,
+            WM_MOUSEACTIVATE, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCPAINT, WNDPROC, WS_BORDER,
+            WS_CAPTION, WS_DLGFRAME, WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+            WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
         },
     },
 };
@@ -38,6 +50,9 @@ unsafe extern "system" fn custom_wnd_proc(
 
         // Prevent background erasure artifacts
         WM_ERASEBKGND => LRESULT(1),
+
+        // Prevent window activation on mouse click so it acts like a background tool (never steals focus)
+        WM_MOUSEACTIVATE => LRESULT(3), // MA_NOACTIVATE: process click without activating window
 
         // Ensure the client area covers the entire window rectangle with 0 non-client margins
         WM_NCCALCSIZE => {
@@ -66,10 +81,21 @@ unsafe extern "system" fn custom_wnd_proc(
     }
 }
 
-#[derive(Clone, serde::Serialize)]
-struct CursorPos {
-    x: f64,
-    y: f64,
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+pub struct InteractiveRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+static INTERACTIVE_REGIONS: Mutex<Vec<InteractiveRect>> = Mutex::new(Vec::new());
+
+#[tauri::command]
+fn update_interactive_regions(regions: Vec<InteractiveRect>) {
+    if let Ok(mut lock) = INTERACTIVE_REGIONS.lock() {
+        *lock = regions;
+    }
 }
 
 #[tauri::command]
@@ -79,7 +105,10 @@ fn set_click_through(window: tauri::WebviewWindow, ignore: bool) {
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![set_click_through])
+        .invoke_handler(tauri::generate_handler![
+            set_click_through,
+            update_interactive_regions
+        ])
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_background_color(Some(Color(0, 0, 0, 0)));
@@ -102,7 +131,15 @@ fn main() {
                             | WS_POPUP.0 as i32;
                         SetWindowLongW(hwnd, GWL_STYLE, clean_style);
 
-                        // 2. Disable DWM non-client rendering policy so DWM never paints a non-client frame
+                        // 2. Extended styles: WS_EX_TOOLWINDOW (hides from Alt+Tab and taskbar)
+                        // and WS_EX_NOACTIVATE (never steals focus, prevents Windows Focus Mode / Focus Assist)
+                        let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
+                        let clean_ex_style = (ex_style & !(WS_EX_APPWINDOW.0 as i32))
+                            | WS_EX_TOOLWINDOW.0 as i32
+                            | WS_EX_NOACTIVATE.0 as i32;
+                        SetWindowLongW(hwnd, GWL_EXSTYLE, clean_ex_style);
+
+                        // 3. Disable DWM non-client rendering policy so DWM never paints a non-client frame
                         let policy = DWMNCRP_DISABLED;
                         let _ = DwmSetWindowAttribute(
                             hwnd,
@@ -111,7 +148,7 @@ fn main() {
                             std::mem::size_of_val(&policy) as u32,
                         );
 
-                        // 3. Clear any extended DWM frame margins (reset to 0 on all edges)
+                        // 4. Clear any extended DWM frame margins (reset to 0 on all edges)
                         let margins = MARGINS {
                             cxLeftWidth: 0,
                             cxRightWidth: 0,
@@ -120,8 +157,7 @@ fn main() {
                         };
                         let _ = DwmExtendFrameIntoClientArea(hwnd, &margins);
 
-                        // 4. Subclass the window to intercept WM_NCPAINT and WM_NCACTIVATE,
-                        // completely suppressing system caption / title bar drawing
+                        // 5. Subclass the window to intercept WM_NCPAINT, WM_NCACTIVATE, WM_ERASEBKGND, WM_NCCALCSIZE, WM_MOUSEACTIVATE
                         let prev = SetWindowLongPtrW(
                             hwnd,
                             GWLP_WNDPROC,
@@ -129,31 +165,60 @@ fn main() {
                         );
                         PREV_WND_PROC.store(prev, Ordering::Relaxed);
 
-                        // 5. Notify the window manager that the frame has changed
+                        // 6. Size and position the window to seamlessly cover the monitor without OS fullscreen
+                        let (x, y, w, h) = if let Ok(Some(mon)) = window.current_monitor() {
+                            let p = mon.position();
+                            let s = mon.size();
+                            (p.x, p.y, s.width as i32, s.height as i32)
+                        } else {
+                            (0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN))
+                        };
+
                         let _ = SetWindowPos(
                             hwnd,
                             None,
-                            0,
-                            0,
-                            0,
-                            0,
-                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                            x,
+                            y,
+                            w,
+                            h,
+                            SWP_NOACTIVATE | SWP_NOZORDER | SWP_FRAMECHANGED,
                         );
                     }
                 }
 
-                // Poll cursor position and forward to Svelte for click-through toggle
+                // Dynamic hit-testing thread:
+                // Tracks cursor position across logical coordinates. If over an interactive region
+                // (e.g. sidebar, top/bottom bar, buttons), mouse events are captured.
+                // If over empty space (<main>), mouse events pass straight through to desktop/windows below.
                 let win_clone = window.clone();
                 thread::spawn(move || {
-                    let mut last_pos = (-1.0_f64, -1.0_f64);
+                    let mut is_interactive_state = false;
+                    // Default to click-through on start
+                    let _ = win_clone.set_ignore_cursor_events(true);
+
                     loop {
                         if let Ok(pos) = win_clone.cursor_position() {
-                            if (pos.x - last_pos.0).abs() > 0.5
-                                || (pos.y - last_pos.1).abs() > 0.5
-                            {
-                                last_pos = (pos.x, pos.y);
-                                let _ =
-                                    win_clone.emit("cursor-move", CursorPos { x: pos.x, y: pos.y });
+                            let scale = win_clone.scale_factor().unwrap_or(1.0);
+                            let logical_x = pos.x / scale;
+                            let logical_y = pos.y / scale;
+
+                            let regions = if let Ok(lock) = INTERACTIVE_REGIONS.lock() {
+                                lock.clone()
+                            } else {
+                                Vec::new()
+                            };
+
+                            let is_inside = regions.iter().any(|r| {
+                                logical_x >= r.x
+                                    && logical_x <= (r.x + r.width)
+                                    && logical_y >= r.y
+                                    && logical_y <= (r.y + r.height)
+                            });
+
+                            if is_inside != is_interactive_state {
+                                is_interactive_state = is_inside;
+                                // Ignore cursor events when NOT inside interactive regions
+                                let _ = win_clone.set_ignore_cursor_events(!is_inside);
                             }
                         }
                         thread::sleep(Duration::from_millis(16));

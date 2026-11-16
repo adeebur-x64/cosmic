@@ -50,12 +50,13 @@
       {
         "label": "main",
         "title": "cosmic",
-        "fullscreen": true,
+        "fullscreen": false,
         "transparent": true,
         "decorations": false,
         "shadow": false,
         "alwaysOnTop": false,
         "resizable": false,
+        "skipTaskbar": true,
         "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,WindowControlsOverlay,StatusBubble --hide-scrollbars"
       }
     ],
