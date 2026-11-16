@@ -82,9 +82,30 @@
     }
   }
 
+  // Getting Battery Information and Status
+  type BatteryInfo = {
+    has_battery: boolean;
+    percentage: number | null;
+    is_charging: boolean;
+    is_plugged_in: boolean;
+    status: string;
+    time_remaining: string | null;
+  };
+
+  let battery: BatteryInfo | null = $state(null);
+
+  async function refreshBattery() {
+    try {
+      battery = await invoke<BatteryInfo>("get_battery_status");
+    } catch (e) {
+      console.error("Failed to get battery status", e);
+    }
+  }
+
   onMount(() => {
     refreshWiFi();
     refreshBluetooth();
+    refreshBattery();
   });
 </script>
 
@@ -199,13 +220,26 @@
             >
               <div class="flex items-center justify-between gap-3">
                 <span class="text-xs font-semibold text-white">Battery</span>
-                <span class="text-[10px] text-emerald-400 font-medium"
-                  >Charging</span
+                <span
+                  class="text-[10px] font-medium {battery?.is_charging
+                    ? 'text-emerald-400'
+                    : battery?.percentage && battery.percentage <= 20
+                      ? 'text-red-400'
+                      : 'text-blue-400'}"
                 >
+                  {battery?.status ?? "Unknown"}
+                </span>
               </div>
               <div class="text-base font-bold text-white leading-tight">
-                85%
+                {battery?.has_battery && battery?.percentage !== null
+                  ? `${battery.percentage}%`
+                  : "Desktop (AC)"}
               </div>
+              {#if battery?.time_remaining}
+                <div class="text-[11px] text-gray-400 font-medium">
+                  {battery.time_remaining}
+                </div>
+              {/if}
             </div>
           </div>
         </div>

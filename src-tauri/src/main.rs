@@ -999,6 +999,86 @@ fn get_bluetooth_status() -> BluetoothInfo {
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BatteryInfo {
+    pub has_battery: bool,
+    pub percentage: Option<u8>,
+    pub is_charging: bool,
+    pub is_plugged_in: bool,
+    pub status: String,
+    pub time_remaining: Option<String>,
+}
+
+#[cfg(target_os = "windows")]
+fn get_battery_status_native() -> BatteryInfo {
+    use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
+    let mut sps = SYSTEM_POWER_STATUS::default();
+    let ok = unsafe { GetSystemPowerStatus(&mut sps) }.is_ok();
+    if !ok {
+        return BatteryInfo {
+            has_battery: false,
+            percentage: None,
+            is_charging: false,
+            is_plugged_in: false,
+            status: "Unknown".into(),
+            time_remaining: None,
+        }
+    }
+
+    let has_battery = (sps.BatteryFlag & 128) == 0 && sps.BatteryLifePercent != 255;
+    let is_plugged_in = sps.ACLineStatus == 1;
+    let is_charging = (sps.BatteryFlag & 8) != 0;
+
+    let percentage = if sps.BatteryLifePercent <= 100 {
+        Some(sps.BatteryLifePercent)
+    } else {
+        None
+    };
+
+    let time_remaining = if sps.BatteryLifeTime != u32::MAX && sps.BatteryLifeTime > 0 {
+        let hours = sps.BatteryLifeTime / 3600;
+        let mins = (sps.BatteryLifeTime % 3600) / 60;
+        Some(format!("{}h {}m remaining", hours, mins))
+    } else {
+        None
+    };
+
+    let status = if !has_battery {
+        if is_plugged_in { "Wall Power" } else { "No Battery" }
+    } else if is_charging {
+        "Charging"
+    } else if is_plugged_in {
+        if percentage == Some(100) { "Full" } else { "Plugged In" }
+    } else {
+        "Discharging"
+    };
+
+    BatteryInfo {
+        has_battery,
+        percentage,
+        is_charging,
+        is_plugged_in,
+        status: status.into(),
+        time_remaining,
+    }
+}
+
+#[tauri::command]
+fn get_battery_status() -> BatteryInfo {
+    #[cfg(target_os = "windows")]
+    return get_battery_status_native();
+
+    #[cfg(not(target_os = "windows"))]
+    BatteryInfo {
+        has_battery: false,
+        percentage: None,
+        is_charging: false,
+        is_plugged_in: false,
+        status: "Unavailable".into(),
+        time_remaining: None,
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -1007,7 +1087,8 @@ fn main() {
             set_work_area,
             restore_work_area,
             get_wifi_status,
-            get_bluetooth_status
+            get_bluetooth_status,
+            get_battery_status
         ])
         .on_window_event(|_window, event| {
             if let tauri::WindowEvent::Destroyed = event {
