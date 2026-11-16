@@ -2,7 +2,8 @@
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
 
-  function syncInteractiveRegions() {
+  function syncLayout() {
+    // 1. Sync interactive regions for selective click-through
     const elements = document.querySelectorAll(".interactive");
     const regions = Array.from(elements).map((el) => {
       const r = el.getBoundingClientRect();
@@ -14,19 +15,48 @@
       };
     });
     invoke("update_interactive_regions", { regions }).catch(() => {});
+
+    // 2. Sync Windows desktop work area so other windows only stay inside the empty area
+    const topBar = document.querySelector(".top-bar");
+    const bottomBar = document.querySelector(".bottom-bar");
+    const leftBar = document.querySelector(".left-bar");
+    const rightBar = document.querySelector(".right-bar");
+
+    if (topBar && bottomBar && leftBar && rightBar) {
+      const dpr = window.devicePixelRatio || 1;
+      const lRect = leftBar.getBoundingClientRect();
+      const tRect = topBar.getBoundingClientRect();
+      const rRect = rightBar.getBoundingClientRect();
+      const bRect = bottomBar.getBoundingClientRect();
+
+      const left = Math.round(lRect.right * dpr);
+      const top = Math.round(tRect.bottom * dpr);
+      const rightVal = rRect.left > lRect.right ? rRect.left : (window.innerWidth - Math.max(rRect.width, 10));
+      const bottomVal = bRect.top > tRect.bottom ? bRect.top : (window.innerHeight - Math.max(bRect.height, 11));
+
+      const right = Math.round(rightVal * dpr);
+      const bottom = Math.round(bottomVal * dpr);
+
+      invoke("set_work_area", {
+        rect: { left, top, right, bottom },
+      }).catch(() => {});
+    }
   }
 
   onMount(() => {
-    syncInteractiveRegions();
-    window.addEventListener("resize", syncInteractiveRegions);
-    const observer = new ResizeObserver(syncInteractiveRegions);
+    syncLayout();
+    setTimeout(syncLayout, 100);
+    setTimeout(syncLayout, 500);
+    window.addEventListener("resize", syncLayout);
+    const observer = new ResizeObserver(syncLayout);
     document
-      .querySelectorAll(".interactive")
+      .querySelectorAll(".interactive, main")
       .forEach((el) => observer.observe(el));
 
     return () => {
-      window.removeEventListener("resize", syncInteractiveRegions);
+      window.removeEventListener("resize", syncLayout);
       observer.disconnect();
+      invoke("restore_work_area").catch(() => {});
     };
   });
 </script>
@@ -36,14 +66,14 @@
 
 <div class="w-screen h-screen flex flex-col">
   <!-- // Top Bar -->
-  <div class="bg-(--bg) w-full h-[1%] interactive">
+  <div class="bg-(--bg) w-full h-[1%] interactive top-bar">
     <div>&#x200B;</div>
   </div>
 
   <div class="flex flex-1 w-full min-h-0">
     <!-- // Left Side Bar -->
     <div
-      class="bg-(--bg) h-full w-[2%] flex flex-col justify-between items-center interactive"
+      class="bg-(--bg) h-full w-[2%] flex flex-col justify-between items-center interactive left-bar"
     >
       <!-- Top Logo -->
       <div class="w-full flex items-center justify-center pt-2">
@@ -82,40 +112,42 @@
     </div>
 
     <!-- Empty Desktop Area -->
-    <main class="flex-1 h-full bg-transparent"></main>
+    <main
+      class="flex items-center justify-center flex-1 h-full bg-transparent pb-3"
+    ></main>
 
     <!-- // Right Side Bar -->
-    <div class="bg-(--bg) h-full w-[0.5%] interactive">
+    <div class="bg-(--bg) h-full w-[0.5%] min-w-[8px] interactive right-bar">
       <div>&#x200B;</div>
     </div>
 
     <!-- // Top Left Corner Rounder (yeah lol) -->
     <div
-      class="absolute top-2.5 left-[1.75vw] w-6 h-6 pointer-events-none"
+      class="absolute top-2.5 left-[1.75vw] w-6 h-6 pointer-events-none z-50"
       style="background: radial-gradient(circle at 100% 100%, transparent 22px, var(--bg) 24px);"
     ></div>
 
     <!-- // Top Right Corner Rounder (yeah lol) -->
     <div
-      class="absolute top-2.5 right-[0.25vw] w-6 h-6 pointer-events-none"
+      class="absolute top-2.5 right-[0.25vw] w-6 h-6 pointer-events-none z-50"
       style="background: radial-gradient(circle at 0% 90%, transparent 20px, var(--bg) 24px);"
     ></div>
 
     <!-- // Bottom Left Corner Rounder (yeah lol) -->
     <div
-      class="absolute bottom-2.5 left-[1.75vw] w-6 h-6 pointer-events-none"
+      class="absolute bottom-2.5 left-[1.75vw] w-6 h-6 pointer-events-none z-50"
       style="background: radial-gradient(circle at 100% 0%, transparent 22px, var(--bg) 24px);"
     ></div>
 
     <!-- // Bottom Right Corner Rounder (yeah lol) -->
     <div
-      class="absolute bottom-2.5 right-[0.25vw] w-6 h-6 pointer-events-none"
+      class="absolute bottom-2.5 right-[0.25vw] w-6 h-6 pointer-events-none z-50"
       style="background: radial-gradient(circle at 0% 0%, transparent 26px, var(--bg) 24px);"
     ></div>
 
     <!-- // Bottom Bar -->
     <div
-      class="absolute bottom-0 left-auto right-auto bg-(--bg) h-[1%] w-full interactive"
+      class="absolute bottom-0 left-auto right-auto bg-(--bg) h-[1%] min-h-[10px] w-full interactive bottom-bar"
     >
       <div>&#x200B;</div>
     </div>
