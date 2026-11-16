@@ -16,26 +16,15 @@
     });
     invoke("update_interactive_regions", { regions }).catch(() => {});
 
-    // 2. Sync Windows desktop work area so other windows only stay inside the empty area
-    const topBar = document.querySelector(".top-bar");
-    const bottomBar = document.querySelector(".bottom-bar");
-    const leftBar = document.querySelector(".left-bar");
-    const rightBar = document.querySelector(".right-bar");
-
-    if (topBar && bottomBar && leftBar && rightBar) {
+    // 2. Sync Windows desktop work area so other windows only stay inside <main>
+    const mainEl = document.querySelector("main");
+    if (mainEl) {
       const dpr = window.devicePixelRatio || 1;
-      const lRect = leftBar.getBoundingClientRect();
-      const tRect = topBar.getBoundingClientRect();
-      const rRect = rightBar.getBoundingClientRect();
-      const bRect = bottomBar.getBoundingClientRect();
-
-      const left = Math.round(lRect.right * dpr);
-      const top = Math.round(tRect.bottom * dpr);
-      const rightVal = rRect.left > lRect.right ? rRect.left : (window.innerWidth - Math.max(rRect.width, 10));
-      const bottomVal = bRect.top > tRect.bottom ? bRect.top : (window.innerHeight - Math.max(bRect.height, 11));
-
-      const right = Math.round(rightVal * dpr);
-      const bottom = Math.round(bottomVal * dpr);
+      const mRect = mainEl.getBoundingClientRect();
+      const left = Math.round(mRect.left * dpr);
+      const top = Math.round(mRect.top * dpr);
+      const right = Math.round(mRect.right * dpr);
+      const bottom = Math.round(mRect.bottom * dpr);
 
       invoke("set_work_area", {
         rect: { left, top, right, bottom },
@@ -56,15 +45,32 @@
     return () => {
       window.removeEventListener("resize", syncLayout);
       observer.disconnect();
-      invoke("restore_work_area").catch(() => {});
     };
+  });
+
+  // Getting WiFi Status (Connected or Not + SSID)
+  type WifiInfo = {
+    status: string;
+    ssid: string | null;
+    error_code: number | null;
+  };
+
+  let wifi: WifiInfo | null = $state(null);
+
+  async function refreshWiFi() {
+    try {
+      wifi = await invoke<WifiInfo>("get_wifi_status");
+    } catch (e) {
+      console.error("Failed to get WiFi status", e);
+    }
+  }
+
+  onMount(() => {
+    refreshWiFi();
   });
 </script>
 
-<!-- These comments aren't AI generated btw. I actually wrote them because it became confusing which div referred to what lol -->
-<!-- I'm not even sure if this will render properly on different screens -->
-
-<div class="w-screen h-screen flex flex-col">
+<div class="w-screen h-screen flex flex-col overflow-hidden select-none">
   <!-- // Top Bar -->
   <div class="bg-(--bg) w-full h-[1%] interactive top-bar">
     <div>&#x200B;</div>
@@ -73,15 +79,26 @@
   <div class="flex flex-1 w-full min-h-0">
     <!-- // Left Side Bar -->
     <div
-      class="bg-(--bg) h-full w-[2%] flex flex-col justify-between items-center interactive left-bar"
+      class="bg-(--bg) h-full w-[2.25%] flex flex-col justify-between items-center interactive left-bar"
     >
       <!-- Top Logo -->
-      <div class="w-full flex items-center justify-center pt-2">
-        <img
-          src="/win10/pride_win10.svg"
-          alt="logo"
-          class="w-7 h-7 object-contain"
-        />
+      <div
+        class="relative group cursor-pointer flex items-center justify-center"
+      >
+        <div class="w-full flex items-center justify-center pt-2">
+          <img
+            src="/win10/pride_win10.svg"
+            alt="logo"
+            class="w-7 h-7 object-contain"
+          />
+        </div>
+        <div
+          class="absolute left-full ml-3 top-1/2 -translate-y-1/2 opacity-0 scale-95 pointer-events-none group-hover:opacity-100 group-hover:scale-100 transition-all duration-150 flex flex-col gap-1 bg-[#1e1e1e]/95 border border-white/10 rounded-xl p-3 shadow-2xl min-w-20 z-50 select-none whitespace-nowrap"
+        >
+          <div class="flex items-center justify-between">
+            <span class="text-[12px] font-semibold text-white">Start Menu</span>
+          </div>
+        </div>
       </div>
 
       <!-- Bottom Nav Icons -->
@@ -91,65 +108,138 @@
         <div
           class="flex flex-col gap-3 bg-[#2e2e2e] p-1.5 rounded-3xl items-center"
         >
+          <!-- Wi-Fi -->
           <div
-            class="w-5 h-5 bg-gray-100"
-            style="-webkit-mask: url('navBar/wifi.svg') no-repeat center / contain; mask: url('navBar/wifi.svg') no-repeat center / contain;"
-          ></div>
+            class="relative group cursor-pointer flex items-center justify-center"
+          >
+            <div
+              class="w-5 h-5 bg-gray-100 group-hover:bg-white transition-colors hover:bg-red-500"
+              style="-webkit-mask: url('navBar/wifi.svg') no-repeat center / contain; mask: url('navBar/wifi.svg') no-repeat center / contain;"
+            ></div>
+
+            <!-- Wi-Fi Hover Card -->
+            <div
+              class="absolute left-full ml-3 top-1/2 -translate-y-1/2 opacity-0 scale-95 pointer-events-none group-hover:opacity-100 group-hover:scale-100 transition-all duration-150 flex flex-col gap-1 bg-[#1e1e1e]/95 border border-white/10 rounded-xl p-3 shadow-2xl min-w-44 z-50 select-none whitespace-nowrap"
+            >
+              <div class="flex items-center justify-between gap-3">
+                <span class="text-[14px] font-semibold text-white">WiFi</span>
+                <span class="text-[10px] text-emerald-400 font-medium"
+                  >{wifi?.status ?? "Unknown"}</span
+                >
+              </div>
+              <div class="text-[12px] text-gray-300 font-medium">
+                {wifi?.ssid ?? "Not Connected"}
+              </div>
+            </div>
+          </div>
+
+          <!-- Bluetooth -->
           <div
-            class="w-5 h-5 bg-gray-100"
-            style="-webkit-mask: url('navBar/bluetooth.svg') no-repeat center / contain; mask: url('navBar/bluetooth.svg') no-repeat center / contain;"
-          ></div>
+            class="relative group cursor-pointer flex items-center justify-center"
+          >
+            <div
+              class="w-5 h-5 bg-gray-100 group-hover:bg-white transition-colors hover:bg-red-500"
+              style="-webkit-mask: url('navBar/bluetooth.svg') no-repeat center / contain; mask: url('navBar/bluetooth.svg') no-repeat center / contain;"
+            ></div>
+
+            <!-- Bluetooth Hover Card -->
+            <div
+              class="absolute left-full ml-3 top-1/2 -translate-y-1/2 opacity-0 scale-95 pointer-events-none group-hover:opacity-100 group-hover:scale-100 transition-all duration-150 flex flex-col gap-1 bg-[#1e1e1e]/95 border border-white/10 rounded-xl p-3 shadow-2xl min-w-44 z-50 select-none whitespace-nowrap"
+            >
+              <div class="flex items-center justify-between gap-3">
+                <span class="text-[14px] font-semibold text-white"
+                  >Bluetooth</span
+                >
+                <span class="text-[10px] text-blue-400 font-medium">On</span>
+              </div>
+              <div class="text-[12px] text-gray-300 font-medium">
+                Connected_Device_Name
+              </div>
+            </div>
+          </div>
+
+          <!-- Battery -->
           <div
-            class="w-5 h-5 bg-gray-100"
-            style="-webkit-mask: url('navBar/battery.svg') no-repeat center / contain; mask: url('navBar/battery.svg') no-repeat center / contain;"
-          ></div>
+            class="relative group cursor-pointer flex items-center justify-center"
+          >
+            <div
+              class="w-5 h-5 bg-gray-100 group-hover:bg-white transition-colors hover:bg-red-500"
+              style="-webkit-mask: url('navBar/battery.svg') no-repeat center / contain; mask: url('navBar/battery.svg') no-repeat center / contain;"
+            ></div>
+
+            <!-- Battery Hover Card -->
+            <div
+              class="absolute left-full ml-3 top-1/2 -translate-y-1/2 opacity-0 scale-95 pointer-events-none group-hover:opacity-100 group-hover:scale-100 transition-all duration-150 flex flex-col gap-1 bg-[#1e1e1e]/95 border border-white/10 rounded-xl p-3 shadow-2xl min-w-44 z-50 select-none whitespace-nowrap"
+            >
+              <div class="flex items-center justify-between gap-3">
+                <span class="text-xs font-semibold text-white">Battery</span>
+                <span class="text-[10px] text-emerald-400 font-medium"
+                  >Charging</span
+                >
+              </div>
+              <div class="text-base font-bold text-white leading-tight">
+                85%
+              </div>
+            </div>
+          </div>
         </div>
+
+        <!-- Power Off Button -->
         <div
-          class="w-5 h-5 bg-red-400"
-          style="-webkit-mask: url('navBar/power_off.svg') no-repeat center / contain; mask: url('navBar/power_off.svg') no-repeat center / contain;"
-        ></div>
+          class="relative group cursor-pointer flex items-center justify-center"
+        >
+          <div
+            class="w-5 h-5 bg-red-300 group-hover:bg-red-500 transition-colors"
+            style="-webkit-mask: url('navBar/power_off.svg') no-repeat center / contain; mask: url('navBar/power_off.svg') no-repeat center / contain;"
+          ></div>
+          <!-- Power Hover Card -->
+          <div
+            class="absolute left-full ml-3 top-1/2 -translate-y-1/2 opacity-0 scale-95 pointer-events-none group-hover:opacity-100 group-hover:scale-100 transition-all duration-150 flex flex-col gap-1 bg-[#1e1e1e]/95 border border-white/10 rounded-xl px-3 py-2 shadow-2xl min-w-28 z-50 select-none whitespace-nowrap"
+          >
+            <span class="text-xs font-semibold text-red-400">Power Options</span
+            >
+          </div>
+        </div>
       </div>
     </div>
 
     <!-- Empty Desktop Area -->
     <main
-      class="flex items-center justify-center flex-1 h-full bg-transparent pb-3"
-    ></main>
+      class="relative flex items-center justify-center flex-1 h-full bg-transparent"
+    >
+      <!-- // Top Left Corner Rounder -->
+      <div
+        class="absolute top-0 left-0 w-6 h-6 pointer-events-none z-50"
+        style="background: radial-gradient(circle at 100% 100%, transparent 22px, var(--bg) 24px);"
+      ></div>
+
+      <!-- // Top Right Corner Rounder -->
+      <div
+        class="absolute top-0 right-0 w-6 h-6 pointer-events-none z-50"
+        style="background: radial-gradient(circle at 0% 100%, transparent 22px, var(--bg) 24px);"
+      ></div>
+
+      <!-- // Bottom Left Corner Rounder -->
+      <div
+        class="absolute bottom-0 left-0 w-6 h-6 pointer-events-none z-50"
+        style="background: radial-gradient(circle at 100% 0%, transparent 22px, var(--bg) 24px);"
+      ></div>
+
+      <!-- // Bottom Right Corner Rounder -->
+      <div
+        class="absolute bottom-0 right-0 w-6 h-6 pointer-events-none z-50"
+        style="background: radial-gradient(circle at 0% 0%, transparent 24px, var(--bg) 24px);"
+      ></div>
+    </main>
 
     <!-- // Right Side Bar -->
     <div class="bg-(--bg) h-full w-[0.5%] min-w-[8px] interactive right-bar">
       <div>&#x200B;</div>
     </div>
+  </div>
 
-    <!-- // Top Left Corner Rounder (yeah lol) -->
-    <div
-      class="absolute top-2.5 left-[1.75vw] w-6 h-6 pointer-events-none z-50"
-      style="background: radial-gradient(circle at 100% 100%, transparent 22px, var(--bg) 24px);"
-    ></div>
-
-    <!-- // Top Right Corner Rounder (yeah lol) -->
-    <div
-      class="absolute top-2.5 right-[0.25vw] w-6 h-6 pointer-events-none z-50"
-      style="background: radial-gradient(circle at 0% 90%, transparent 20px, var(--bg) 24px);"
-    ></div>
-
-    <!-- // Bottom Left Corner Rounder (yeah lol) -->
-    <div
-      class="absolute bottom-2.5 left-[1.75vw] w-6 h-6 pointer-events-none z-50"
-      style="background: radial-gradient(circle at 100% 0%, transparent 22px, var(--bg) 24px);"
-    ></div>
-
-    <!-- // Bottom Right Corner Rounder (yeah lol) -->
-    <div
-      class="absolute bottom-2.5 right-[0.25vw] w-6 h-6 pointer-events-none z-50"
-      style="background: radial-gradient(circle at 0% 0%, transparent 26px, var(--bg) 24px);"
-    ></div>
-
-    <!-- // Bottom Bar -->
-    <div
-      class="absolute bottom-0 left-auto right-auto bg-(--bg) h-[1%] min-h-[10px] w-full interactive bottom-bar"
-    >
-      <div>&#x200B;</div>
-    </div>
+  <!-- // Bottom Bar -->
+  <div class="bg-(--bg) h-[1%] min-h-[10px] w-full interactive bottom-bar">
+    <div>&#x200B;</div>
   </div>
 </div>

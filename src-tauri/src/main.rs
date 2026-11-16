@@ -37,7 +37,7 @@ use windows::Win32::{
             CallWindowProcW, CreateWindowExW, DefWindowProcW, DestroyWindow, EnumWindows,
             GetAncestor, GetClassNameW, GetDesktopWindow, GetForegroundWindow,
             GetShellWindow, GetSystemMetrics, GetWindowLongW, GetWindowRect, GetWindowTextW,
-            IsIconic, IsWindowVisible, IsZoomed, PostMessageW, SendNotifyMessageW, SetWindowLongPtrW,
+            GetWindowThreadProcessId, IsIconic, IsWindowVisible, IsZoomed, PostMessageW, SendNotifyMessageW, SetWindowLongPtrW,
             SetWindowLongW, SetWindowPos, ShowWindow, SystemParametersInfoW, GA_ROOT, GWLP_WNDPROC,
             GWL_EXSTYLE, GWL_STYLE, HMENU, HWND_BOTTOM, HWND_BROADCAST, HWND_NOTOPMOST,
             HWND_TOPMOST, SM_CXSCREEN, SM_CYSCREEN, SPIF_UPDATEINIFILE, SPI_GETWORKAREA,
@@ -241,6 +241,11 @@ unsafe fn register_edge_appbar(edge: u32, thickness: i32, screen_w: i32, screen_
 #[cfg(target_os = "windows")]
 unsafe fn should_confine_window(hwnd: HWND, our_hwnd: HWND) -> bool {
     if hwnd.0 == 0 || hwnd == our_hwnd {
+        return false;
+    }
+    let mut pid = 0u32;
+    GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    if pid == std::process::id() {
         return false;
     }
     if hwnd == GetDesktopWindow() || hwnd == GetShellWindow() {
@@ -657,13 +662,238 @@ fn is_foreground_fullscreen(our_hwnd: HWND) -> bool {
     }
 }
 
+#[cfg(target_os = "windows")]
+use windows::Win32::NetworkManagement::WiFi::*;
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WifiInfo {
+    pub status: String,
+    pub ssid: Option<String>,
+    pub error_code: Option<u32>,
+}
+
+#[cfg(target_os = "windows")]
+struct WifiHandle(windows::Win32::Foundation::HANDLE);
+
+#[cfg(target_os = "windows")]
+impl Drop for WifiHandle {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = WlanCloseHandle(self.0, None);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+struct WifiMemory(*mut std::ffi::c_void);
+
+#[cfg(target_os = "windows")]
+impl Drop for WifiMemory {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                WlanFreeMemory(self.0);
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn get_wifi_status_native() -> WifiInfo {
+    use std::ptr::null_mut;
+
+    unsafe {
+        let mut version = 0u32;
+        let mut raw_handle =
+            windows::Win32::Foundation::HANDLE::default();
+
+        let result = WlanOpenHandle(
+            2,
+            None,
+            &mut version,
+            &mut raw_handle,
+        );
+
+        if result != 0 {
+            return WifiInfo {
+                status: "unknown".into(),
+                ssid: None,
+                error_code: Some(result),
+            };
+        }
+
+        let handle = WifiHandle(raw_handle);
+
+        let mut raw_list = null_mut();
+
+        let result = WlanEnumInterfaces(
+            handle.0,
+            None,
+            &mut raw_list,
+        );
+
+        if result != 0 {
+            return WifiInfo {
+                status: "unknown".into(),
+                ssid: None,
+                error_code: Some(result),
+            };
+        }
+
+        if raw_list.is_null() {
+            return WifiInfo {
+                status: "unknown".into(),
+                ssid: None,
+                error_code: None,
+            };
+        }
+
+        let list_memory = WifiMemory(raw_list.cast());
+
+        let count = (*raw_list).dwNumberOfItems as usize;
+
+        if count == 0 {
+            return WifiInfo {
+                status: "unknown".into(),
+                ssid: None,
+                error_code: None,
+            };
+        }
+
+        let interfaces = std::ptr::addr_of!(
+            (*raw_list).InterfaceInfo
+        ).cast::<WLAN_INTERFACE_INFO>();
+
+        let mut connected = false;
+        let mut ssid_result = None;
+        let mut radio_on = false;
+        let mut radio_known = false;
+
+        for i in 0..count {
+            let interface = &*interfaces.add(i);
+
+            // Check whether this interface is connected.
+            if interface.isState == wlan_interface_state_connected {
+                connected = true;
+
+                let mut size = 0u32;
+                let mut data = null_mut();
+                let mut opcode_type = WLAN_OPCODE_VALUE_TYPE(0);
+
+                let result = WlanQueryInterface(
+                    handle.0,
+                    &interface.InterfaceGuid,
+                    wlan_intf_opcode_current_connection,
+                    None,
+                    &mut size,
+                    &mut data,
+                    Some(&mut opcode_type),
+                );
+
+                if result == 0 && !data.is_null() {
+                    let memory = WifiMemory(data.cast());
+
+                    let connection =
+                        &*(data as *const WLAN_CONNECTION_ATTRIBUTES);
+
+                    let ssid = &connection
+                        .wlanAssociationAttributes
+                        .dot11Ssid;
+
+                    let len = (ssid.uSSIDLength as usize).min(32);
+
+                    ssid_result = Some(
+                        String::from_utf8_lossy(
+                            &ssid.ucSSID[..len]
+                        ).into_owned()
+                    );
+
+                    drop(memory);
+                }
+
+                continue;
+            }
+
+            // Check physical and software radio state.
+            let mut size = 0u32;
+            let mut data = null_mut();
+            let mut opcode_type = WLAN_OPCODE_VALUE_TYPE(0);
+
+            let result = WlanQueryInterface(
+                handle.0,
+                &interface.InterfaceGuid,
+                wlan_intf_opcode_radio_state,
+                None,
+                &mut size,
+                &mut data,
+                Some(&mut opcode_type),
+            );
+
+            if result == 0 && !data.is_null() {
+                let memory = WifiMemory(data.cast());
+
+                let radio = &*(data as *const WLAN_RADIO_STATE);
+
+                let phy_count =
+                    (radio.dwNumberOfPhys as usize).min(64);
+
+                for phy in radio.PhyRadioState.iter().take(phy_count) {
+                    radio_known = true;
+
+                    if phy.dot11SoftwareRadioState == dot11_radio_state_on
+                        && phy.dot11HardwareRadioState == dot11_radio_state_on
+                    {
+                        radio_on = true;
+                    }
+                }
+
+                drop(memory);
+            }
+        }
+
+        let _keep_list_alive = list_memory;
+
+        let status = if connected {
+            "Connected"
+        } else if radio_on {
+            "Not Connected"
+        } else if radio_known {
+            "Off"
+        } else {
+            "Unknown"
+        };
+
+        WifiInfo {
+            status: status.into(),
+            ssid: ssid_result,
+            error_code: None,
+        }
+    }
+}
+
+#[tauri::command]
+fn get_wifi_status() -> WifiInfo {
+    #[cfg(target_os = "windows")]
+    return get_wifi_status_native();
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        return WifiInfo {
+            status: "unknown".into(),
+            ssid: None,
+            error_code: None,
+        }
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             set_click_through,
             update_interactive_regions,
             set_work_area,
-            restore_work_area
+            restore_work_area,
+            get_wifi_status
         ])
         .on_window_event(|_window, event| {
             if let tauri::WindowEvent::Destroyed = event {
@@ -857,6 +1087,37 @@ fn main() {
                                 }
                             }
                             last_fg = fg;
+
+                            // Ensure our window stays perfectly positioned at (0, 0, screen_w, screen_h)
+                            unsafe {
+                                let mut our_rect = RECT::default();
+                                if GetWindowRect(hwnd, &mut our_rect).is_ok() {
+                                    let sw = GetSystemMetrics(SM_CXSCREEN);
+                                    let sh = GetSystemMetrics(SM_CYSCREEN);
+                                    if our_rect.left != 0 || our_rect.top != 0 || (our_rect.right - our_rect.left) != sw || (our_rect.bottom - our_rect.top) != sh {
+                                        let style = GetWindowLongW(hwnd, GWL_STYLE);
+                                        let clean_style = (style
+                                            & !(WS_CAPTION.0 as i32
+                                                | WS_THICKFRAME.0 as i32
+                                                | WS_BORDER.0 as i32
+                                                | WS_DLGFRAME.0 as i32
+                                                | WS_SYSMENU.0 as i32))
+                                            | WS_POPUP.0 as i32;
+                                        if style != clean_style {
+                                            SetWindowLongW(hwnd, GWL_STYLE, clean_style);
+                                        }
+                                        let _ = SetWindowPos(
+                                            hwnd,
+                                            HWND_TOPMOST,
+                                            0,
+                                            0,
+                                            sw,
+                                            sh,
+                                            SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                                        );
+                                    }
+                                }
+                            }
 
                             // 3. Active Window Confinement
                             if !has_fullscreen_app {
