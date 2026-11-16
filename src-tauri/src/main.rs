@@ -886,6 +886,119 @@ fn get_wifi_status() -> WifiInfo {
     }
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct BluetoothInfo {
+    status: String,
+    device_name: Option<String>,
+    error_code: Option<u32>,
+}
+
+#[cfg(target_os = "windows")]
+fn get_bluetooth_status_native() -> BluetoothInfo {
+    use windows::Devices::{
+        Bluetooth::{BluetoothConnectionStatus, BluetoothDevice, BluetoothLEDevice},
+        Enumeration::DeviceInformation,
+        Radios::{Radio, RadioKind, RadioState},
+    };
+
+    let mut radio_found = false;
+    let mut radio_on = false;
+
+    // 1. Check if Bluetooth radio adapter is enabled / available
+    if let Ok(radios_op) = Radio::GetRadiosAsync() {
+        if let Ok(radios) = radios_op.get() {
+            for radio in radios {
+                if radio.Kind() == Ok(RadioKind::Bluetooth) {
+                    radio_found = true;
+                    if radio.State() == Ok(RadioState::On) {
+                        radio_on = true;
+                    }
+                }
+            }
+        }
+    }
+
+    if !radio_found {
+        return BluetoothInfo {
+            status: "Unavailable".into(),
+            device_name: None,
+            error_code: None,
+        };
+    }
+
+    if !radio_on {
+        return BluetoothInfo {
+            status: "Off".into(),
+            device_name: None,
+            error_code: None,
+        };
+    }
+
+    // 2. Query actively connected devices (both Classic Bluetooth and BLE)
+    let mut connected_device: Option<String> = None;
+
+    if let Ok(selector) = BluetoothDevice::GetDeviceSelectorFromConnectionStatus(BluetoothConnectionStatus::Connected) {
+        if let Ok(op) = DeviceInformation::FindAllAsyncAqsFilter(&selector) {
+            if let Ok(devices) = op.get() {
+                for dev in devices {
+                    if let Ok(name) = dev.Name() {
+                        let name_str = name.to_string();
+                        if !name_str.trim().is_empty() {
+                            connected_device = Some(name_str);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if connected_device.is_none() {
+        if let Ok(selector) = BluetoothLEDevice::GetDeviceSelectorFromConnectionStatus(BluetoothConnectionStatus::Connected) {
+            if let Ok(op) = DeviceInformation::FindAllAsyncAqsFilter(&selector) {
+                if let Ok(devices) = op.get() {
+                    for dev in devices {
+                        if let Ok(name) = dev.Name() {
+                            let name_str = name.to_string();
+                            if !name_str.trim().is_empty() {
+                                connected_device = Some(name_str);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let status = if connected_device.is_some() {
+        "Connected"
+    } else {
+        "On"
+    };
+
+    BluetoothInfo {
+        status: status.into(),
+        device_name: connected_device,
+        error_code: None,
+    }
+}
+
+#[tauri::command]
+fn get_bluetooth_status() -> BluetoothInfo {
+    #[cfg(target_os = "windows")]
+    return get_bluetooth_status_native();
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        return BluetoothInfo {
+            status: "unknown".into(),
+            device_name: None,
+            error_code: None,
+        }
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -893,7 +1006,8 @@ fn main() {
             update_interactive_regions,
             set_work_area,
             restore_work_area,
-            get_wifi_status
+            get_wifi_status,
+            get_bluetooth_status
         ])
         .on_window_event(|_window, event| {
             if let tauri::WindowEvent::Destroyed = event {

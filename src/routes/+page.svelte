@@ -65,8 +65,26 @@
     }
   }
 
+  // Getting Bluetooth Status (Status + Connected Device Name)
+  type BluetoothInfo = {
+    status: string;
+    device_name: string | null;
+    error_code: number | null;
+  };
+
+  let bluetooth: BluetoothInfo | null = $state(null);
+
+  async function refreshBluetooth() {
+    try {
+      bluetooth = await invoke<BluetoothInfo>("get_bluetooth_status");
+    } catch (e) {
+      console.error("Failed to get Bluetooth status", e);
+    }
+  }
+
   onMount(() => {
     refreshWiFi();
+    refreshBluetooth();
   });
 </script>
 
@@ -111,6 +129,9 @@
           <!-- Wi-Fi -->
           <div
             class="relative group cursor-pointer flex items-center justify-center"
+            onmouseenter={refreshWiFi}
+            role="button"
+            tabindex="0"
           >
             <div
               class="w-5 h-5 bg-gray-100 group-hover:bg-white transition-colors hover:bg-red-500"
@@ -136,6 +157,9 @@
           <!-- Bluetooth -->
           <div
             class="relative group cursor-pointer flex items-center justify-center"
+            onmouseenter={refreshBluetooth}
+            role="button"
+            tabindex="0"
           >
             <div
               class="w-5 h-5 bg-gray-100 group-hover:bg-white transition-colors hover:bg-red-500"
@@ -150,10 +174,12 @@
                 <span class="text-[14px] font-semibold text-white"
                   >Bluetooth</span
                 >
-                <span class="text-[10px] text-blue-400 font-medium">On</span>
+                <span class="text-[10px] text-blue-400 font-medium"
+                  >{bluetooth?.status ?? "Off"}</span
+                >
               </div>
               <div class="text-[12px] text-gray-300 font-medium">
-                Connected_Device_Name
+                {bluetooth?.device_name ?? "No Device Connected"}
               </div>
             </div>
           </div>
